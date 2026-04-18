@@ -30,7 +30,8 @@ class ToolbarWidget(QToolBar):
         group.setExclusive(True)
 
         modes = [
-            ("🔲 背景除去", "bg_remove", "背景を透過PNGに変換"),
+            ("🔲 背景除去", "bg_remove", "AIが自動で背景を透過PNGに変換"),
+            ("✂️ 選択除去", "select_remove", "矩形を描いて囲んだ範囲だけ残し背景を除去"),
             ("✏️ 生成塗りつぶし", "inpaint", "マスク領域をAIで埋める（要GPU推奨）"),
             ("🔍 高解像度化", "upscale", "画像を4倍拡大（Real-ESRGAN）"),
         ]
@@ -58,6 +59,7 @@ class ToolbarWidget(QToolBar):
         self._current_mode = mode_id
         labels = {
             "bg_remove": "▶ 背景除去を実行",
+            "select_remove": "▶ 選択範囲で除去（矩形を描いてから実行）",
             "inpaint": "▶ 生成塗りつぶしを実行",
             "upscale": "▶ 高解像度化を実行",
         }
