@@ -90,7 +90,9 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
-        self._canvas.load_image(Image.open(path))
+        with Image.open(path) as f:
+            image = f.copy()  # ファイルを即解放（Windowsでのロック防止）
+        self._canvas.load_image(image)
         self._pending_rect = None
         self._status.setText(os.path.basename(path))
 
