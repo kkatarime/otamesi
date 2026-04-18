@@ -5,7 +5,7 @@ from ui.main_window import MainWindow
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("メディアマネージャー")
+    app.setApplicationName("ローカルAI画像エディタ")
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

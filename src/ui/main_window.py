@@ -1,57 +1,107 @@
+import os
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QSplitter, QStatusBar, QToolBar, QAction, QLabel
+    QMainWindow, QFileDialog, QLabel, QMessageBox
 )
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QThread, pyqtSignal
+from PIL import Image
 
-from ui.file_browser import FileBrowser
-from ui.media_player_widget import MediaPlayerWidget
+from ui.canvas_widget import CanvasWidget
+from ui.toolbar_widget import ToolbarWidget
+from ui.progress_dialog import ProgressDialog
+
+
+class _BgRemoveThread(QThread):
+    finished = pyqtSignal(object, float)  # (Image, elapsed)
+    error = pyqtSignal(str)
+
+    def __init__(self, image: Image.Image):
+        super().__init__()
+        self._image = image
+
+    def run(self):
+        try:
+            from ai.background_remover import remove_background
+            result, elapsed = remove_background(self._image)
+            self.finished.emit(result, elapsed)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("メディアマネージャー")
-        self.setMinimumSize(1000, 650)
-        self._build_toolbar()
-        self._build_central()
-        self._build_statusbar()
+        self.setWindowTitle("ローカルAI画像エディタ")
+        self.setMinimumSize(900, 620)
+        self._current_mode = "bg_remove"
+        self._worker: QThread | None = None
+        self._build()
 
-    def _build_toolbar(self):
-        toolbar = QToolBar("メインツールバー")
-        toolbar.setIconSize(QSize(20, 20))
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+    def _build(self):
+        self._toolbar = ToolbarWidget(self)
+        self._toolbar.open_requested.connect(self._open_image)
+        self._toolbar.save_requested.connect(self._save_image)
+        self._toolbar.mode_changed.connect(self._on_mode_changed)
+        self.addToolBar(self._toolbar)
 
-        open_action = QAction("📂 フォルダを開く", self)
-        open_action.setStatusTip("メディアフォルダを選択します")
-        open_action.triggered.connect(self._on_open_folder)
-        toolbar.addAction(open_action)
+        self._canvas = CanvasWidget()
+        self.setCentralWidget(self._canvas)
 
-    def _build_central(self):
-        splitter = QSplitter(Qt.Horizontal)
+        self._status = QLabel("画像を開いてください")
+        self.statusBar().addWidget(self._status)
 
-        self.file_browser = FileBrowser()
-        self.file_browser.setMinimumWidth(280)
-        self.file_browser.file_selected.connect(self._on_file_selected)
+    def _open_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "画像を開く", "",
+            "画像ファイル (*.png *.jpg *.jpeg *.webp *.bmp *.tiff)"
+        )
+        if not path:
+            return
+        image = Image.open(path)
+        self._canvas.load_image(image)
+        self._status.setText(os.path.basename(path))
 
-        self.player_widget = MediaPlayerWidget()
+    def _save_image(self):
+        image = self._canvas.current_image
+        if image is None:
+            QMessageBox.information(self, "保存", "保存する画像がありません。")
+            return
+        default_ext = "*.png" if image.mode == "RGBA" else "*.jpg"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "名前を付けて保存", "",
+            f"PNG (*.png);;JPEG (*.jpg *.jpeg)"
+        )
+        if path:
+            image.save(path)
+            self._status.setText(f"保存完了: {os.path.basename(path)}")
 
-        splitter.addWidget(self.file_browser)
-        splitter.addWidget(self.player_widget)
-        splitter.setSizes([300, 700])
-        splitter.setStretchFactor(1, 1)
+    def _on_mode_changed(self, mode: str):
+        self._current_mode = mode
 
-        self.setCentralWidget(splitter)
+    def _run_bg_remove(self):
+        image = self._canvas.current_image
+        if image is None:
+            QMessageBox.information(self, "背景除去", "先に画像を開いてください。")
+            return
 
-    def _build_statusbar(self):
-        self.status_label = QLabel("フォルダを選択してください")
-        self.statusBar().addWidget(self.status_label)
+        dlg = ProgressDialog("背景を除去しています…", self)
+        self._worker = _BgRemoveThread(image)
+        self._worker.finished.connect(lambda img, t: self._on_bg_done(img, t, dlg))
+        self._worker.error.connect(lambda e: self._on_error(e, dlg))
+        self._worker.start()
+        dlg.exec_()
 
-    def _on_open_folder(self):
-        self.file_browser.open_folder()
+    def _on_bg_done(self, image: Image.Image, elapsed: float, dlg: ProgressDialog):
+        dlg.accept()
+        self._canvas.update_image(image)
+        self._status.setText(f"背景除去完了 ({elapsed:.1f}秒) — 💾 保存で透過PNGに書き出せます")
 
-    def _on_file_selected(self, file_path: str):
-        self.player_widget.load(file_path)
-        self.status_label.setText(file_path)
+    def _on_error(self, message: str, dlg: ProgressDialog):
+        dlg.reject()
+        QMessageBox.critical(self, "エラー", f"処理に失敗しました:\n{message}")
+
+    def keyPressEvent(self, event):
+        from PyQt5.QtCore import Qt
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Space:
+            if self._current_mode == "bg_remove":
+                self._run_bg_remove()
+        super().keyPressEvent(event)
