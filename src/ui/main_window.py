@@ -89,7 +89,18 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "背景除去", "先に画像を開いてください。")
             return
 
-        dlg = ProgressDialog("背景を除去しています…", self)
+        from ai.background_remover import is_model_cached
+        if not is_model_cached():
+            ret = QMessageBox.question(
+                self, "初回モデルダウンロード",
+                "AIモデル（約176MB）をダウンロードします。\n"
+                "インターネット接続が必要です。続行しますか？",
+            )
+            if ret != QMessageBox.Yes:
+                return
+
+        msg = "背景を除去しています…"
+        dlg = ProgressDialog(msg, self)
         self._worker = _BgRemoveThread(image)
         self._worker.finished.connect(lambda img, t: self._on_bg_done(img, t, dlg))
         self._worker.error.connect(lambda e: self._on_error(e, dlg))
