@@ -1,35 +1,45 @@
 import sys
 import os
 import unittest
-from unittest.mock import patch, MagicMock
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from ai.background_remover import is_model_cached, remove_background
 
 
+class TestIsModelCached(unittest.TestCase):
+    def test_returns_bool(self):
+        self.assertIsInstance(is_model_cached(), bool)
+
+
+@unittest.skipUnless(is_model_cached(), "モデル未ダウンロードのためスキップ")
 class TestRemoveBackground(unittest.TestCase):
-    def test_returns_rgba_and_elapsed(self):
-        rgba_result = Image.new("RGBA", (100, 100))
-        mock_rembg = MagicMock()
-        mock_rembg.remove.return_value = rgba_result
-        with patch.dict("sys.modules", {"rembg": mock_rembg}):
-            import ai.background_remover as bg_mod
-            import importlib
-            importlib.reload(bg_mod)
-            result, elapsed = bg_mod.remove_background(Image.new("RGB", (100, 100)))
+    def _img(self, w=80, h=80):
+        return Image.new("RGB", (w, h), color=(120, 80, 200))
+
+    def test_returns_rgba(self):
+        result, _ = remove_background(self._img())
         self.assertEqual(result.mode, "RGBA")
+
+    def test_same_size(self):
+        img = self._img(150, 100)
+        result, _ = remove_background(img)
+        self.assertEqual(result.size, img.size)
+
+    def test_elapsed_non_negative(self):
+        _, elapsed = remove_background(self._img())
         self.assertGreaterEqual(elapsed, 0.0)
 
-    def test_elapsed_is_float(self):
-        rgba_result = Image.new("RGBA", (50, 50))
-        mock_rembg = MagicMock()
-        mock_rembg.remove.return_value = rgba_result
-        with patch.dict("sys.modules", {"rembg": mock_rembg}):
-            import ai.background_remover as bg_mod
-            import importlib
-            importlib.reload(bg_mod)
-            _, elapsed = bg_mod.remove_background(Image.new("RGB", (50, 50)))
-        self.assertIsInstance(elapsed, float)
+    def test_progress_callback_called(self):
+        stages = []
+        remove_background(self._img(), progress_cb=stages.append)
+        self.assertGreater(len(stages), 0)
+
+    def test_large_image_auto_resize(self):
+        # 2000px画像でも正しいサイズで返る
+        img = self._img(2000, 1500)
+        result, _ = remove_background(img)
+        self.assertEqual(result.size, (2000, 1500))
 
 
 if __name__ == "__main__":
