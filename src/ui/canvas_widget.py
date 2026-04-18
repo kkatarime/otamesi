@@ -42,8 +42,9 @@ class CanvasWidget(QGraphicsView):
         self._sel_rect_item: QGraphicsRectItem | None = None
 
         # マスクオーバーレイ用（ブラシモード）
-        self._mask_arr: np.ndarray | None = None       # H×W uint8 (0/255)
+        self._mask_arr: np.ndarray | None = None
         self._mask_pixmap_item: QGraphicsPixmapItem | None = None
+        self._overlay_data: bytes | None = None  # QImageのGC防止
 
     # ── 公開API ──────────────────────────────────────────
 
@@ -120,12 +121,12 @@ class CanvasWidget(QGraphicsView):
         if self._mask_arr is None or self._image is None:
             return
         h, w = self._mask_arr.shape
-        # RGBA: 赤半透明でマスク領域を表示
         overlay = np.zeros((h, w, 4), dtype=np.uint8)
-        overlay[self._mask_arr > 0] = [255, 0, 0, 120]
-        overlay_img = Image.fromarray(overlay, "RGBA")
-        data = overlay_img.tobytes("raw", "RGBA")
-        qimg = QImage(data, w, h, QImage.Format_RGBA8888)
+        overlay[self._mask_arr > 0] = [255, 80, 80, 160]  # 赤半透明
+        # bytesPerLine を明示して QImage が正しくデータを読む
+        bytes_per_line = w * 4
+        self._overlay_data = overlay.tobytes()  # GC防止のためインスタンス変数で保持
+        qimg = QImage(self._overlay_data, w, h, bytes_per_line, QImage.Format_RGBA8888)
         pix = QPixmap.fromImage(qimg)
         if self._mask_pixmap_item is None:
             self._mask_pixmap_item = self._scene.addPixmap(pix)

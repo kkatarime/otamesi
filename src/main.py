@@ -1,4 +1,11 @@
 import sys
+
+# PyQt5より先にtorchをロードしないとWindows DLL競合が発生するため先読みする
+try:
+    import torch  # noqa: F401
+except (ImportError, OSError):
+    pass
+
 from PyQt5.QtWidgets import QApplication
 from ui.main_window import MainWindow
 

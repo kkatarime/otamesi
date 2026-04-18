@@ -9,6 +9,7 @@ from ui.toolbar_widget import ToolbarWidget
 from ui.progress_dialog import ProgressDialog
 from ui.inpaint_dialog import InpaintDialog
 from ui.first_run_wizard import FirstRunWizard, should_show_wizard
+from ui.gallery_widget import GalleryDialog, save_to_gallery
 
 
 class _BgRemoveThread(QThread):
@@ -65,18 +66,23 @@ class _InpaintThread(QThread):
     progress = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, image: Image.Image, mask: Image.Image, prompt: str, neg: str):
+    def __init__(self, image: Image.Image, mask: Image.Image,
+                 prompt: str, neg: str, steps: int, guidance: float, seed: int):
         super().__init__()
-        self._image  = image
-        self._mask   = mask
-        self._prompt = prompt
-        self._neg    = neg
+        self._image    = image
+        self._mask     = mask
+        self._prompt   = prompt
+        self._neg      = neg
+        self._steps    = steps
+        self._guidance = guidance
+        self._seed     = seed
 
     def run(self):
         try:
             from ai.inpainter import inpaint
             result, elapsed = inpaint(
                 self._image, self._mask, self._prompt, self._neg,
+                steps=self._steps, guidance_scale=self._guidance, seed=self._seed,
                 progress_cb=self.progress.emit,
             )
             self.finished.emit(result, elapsed)
@@ -122,6 +128,8 @@ class MainWindow(QMainWindow):
         self._toolbar.open_requested.connect(self._open_image)
         self._toolbar.save_requested.connect(self._save_image)
         self._toolbar.run_requested.connect(self._on_run)
+        self._toolbar.mode_changed.connect(self._on_mode_changed)
+        self._toolbar.gallery_requested.connect(self._show_gallery)
         self.addToolBar(self._toolbar)
 
         self._canvas = CanvasWidget()
@@ -160,11 +168,23 @@ class MainWindow(QMainWindow):
 
     # ── モード切替・実行 ──────────────────────────────────
 
-    def _on_run(self, mode: str):
+    def _on_mode_changed(self, mode: str):
         self._current_mode = mode
-        self._canvas.set_select_mode(mode == "select_remove")
-        if mode != "inpaint":
+        if mode == "inpaint":
+            self._canvas.set_select_mode(False)
+            self._canvas.set_brush_mode(True)
+            self._status.setText(
+                "🖌 ブラシで塗りつぶしたい領域を塗ってから「▶ 実行」を押してください"
+                "（右クリックで消去）"
+            )
+        elif mode == "select_remove":
             self._canvas.set_brush_mode(False)
+            self._canvas.set_select_mode(True)
+        else:
+            self._canvas.set_brush_mode(False)
+            self._canvas.set_select_mode(False)
+
+    def _on_run(self, mode: str):
         {
             "bg_remove":     self._run_bg_remove,
             "select_remove": self._run_select_remove,
@@ -243,27 +263,44 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "生成塗りつぶし", "先に画像を開いてください。")
             return
 
+        mask = self._canvas.get_mask()
+        if mask is None or not np.any(np.array(mask) > 0):
+            QMessageBox.information(
+                self, "生成塗りつぶし",
+                "先にブラシで塗りつぶしたい領域を塗ってください。\n"
+                "右クリックで消去できます。",
+            )
+            return
+
         dlg = InpaintDialog(self)
         dlg.set_defaults(self._inpaint_prompt, self._inpaint_neg)
-
         if dlg.exec_() != InpaintDialog.Accepted:
             return
 
         self._inpaint_prompt = dlg.prompt
         self._inpaint_neg    = dlg.negative_prompt
-        self._canvas.set_brush_mode(True)
-        self._canvas.set_brush_radius(dlg.brush_size)
-        self._status.setText(
-            "ブラシで塗りつぶしたい領域を塗ってから「▶ 生成塗りつぶしを実行」を再度押してください"
-        )
 
-        mask = self._canvas.get_mask()
-        if mask is None or not np.any(np.array(mask) > 0):
-            return  # まだマスクが空 → ユーザーがブラシ後に再押し
+        # AIモデル未使用の場合はOpenCVで動作することを明示
+        from ai.inpainter import is_diffusers_available, is_model_cached
+        if not (is_diffusers_available() and is_model_cached()):
+            ans = QMessageBox.question(
+                self, "確認 — OpenCV モードで実行",
+                "AIモデルが未インストールのため、プロンプトは使用されません。\n"
+                "OpenCV（周囲ピクセル補完）で処理します。続行しますか？\n\n"
+                "AI生成を使うには:\n"
+                "  pip install diffusers transformers accelerate torch",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ans != QMessageBox.Yes:
+                return
 
         self._canvas.set_brush_mode(False)
+
         prog = ProgressDialog("生成塗りつぶし処理中…", self)
-        worker = _InpaintThread(image, mask, self._inpaint_prompt, self._inpaint_neg)
+        worker = _InpaintThread(
+            image, mask, self._inpaint_prompt, self._inpaint_neg,
+            dlg.steps, dlg.guidance_scale, dlg.seed,
+        )
         self._worker = worker
         worker.progress.connect(prog.set_message)
         worker.finished.connect(lambda img, t: self._on_done(img, t, prog, "生成塗りつぶし"))
@@ -300,6 +337,9 @@ class MainWindow(QMainWindow):
 
     # ── 共通完了・エラー ──────────────────────────────────
 
+    def _show_gallery(self):
+        GalleryDialog(self).exec_()
+
     def _on_done(self, image: Image.Image, elapsed: float, dlg: ProgressDialog, label: str):
         if dlg.cancelled:
             return
@@ -307,7 +347,24 @@ class MainWindow(QMainWindow):
         self._canvas.update_image(image)
         self._canvas.set_select_mode(False)
         self._pending_rect = None
-        self._status.setText(f"{label}完了 ({elapsed:.1f}秒) — 💾 保存で書き出せます")
+
+        # ギャラリーに自動保存
+        label_map = {
+            "背景除去": "bg_remove", "選択除去": "select_remove",
+            "生成塗りつぶし": "inpaint", "高解像度化": "upscale",
+        }
+        saved_path = save_to_gallery(image, label_map.get(label, label))
+        self._status.setText(
+            f"{label}完了 ({elapsed:.1f}秒) — 🖼 ギャラリーに保存しました"
+        )
+
+        ans = QMessageBox.question(
+            self, f"{label}完了",
+            f"処理完了（{elapsed:.1f}秒）\n\nギャラリーに保存しました:\n{saved_path.name}\n\nギャラリーを開きますか？",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if ans == QMessageBox.Yes:
+            GalleryDialog(self).exec_()
 
     def _on_error(self, message: str, dlg: ProgressDialog):
         if dlg.cancelled:

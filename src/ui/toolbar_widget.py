@@ -3,9 +3,11 @@ from PyQt5.QtCore import pyqtSignal
 
 
 class ToolbarWidget(QToolBar):
-    open_requested = pyqtSignal()
-    save_requested = pyqtSignal()
-    run_requested = pyqtSignal(str)  # 実行ボタン → 現在のモードIDを送る
+    open_requested   = pyqtSignal()
+    save_requested   = pyqtSignal()
+    run_requested    = pyqtSignal(str)
+    mode_changed     = pyqtSignal(str)
+    gallery_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("メインツールバー", parent)
@@ -23,6 +25,11 @@ class ToolbarWidget(QToolBar):
         save_act.setStatusTip("処理済み画像を保存")
         save_act.triggered.connect(self.save_requested)
         self.addAction(save_act)
+
+        gallery_act = QAction("🖼 ギャラリー", self)
+        gallery_act.setStatusTip("保存済み画像一覧を表示")
+        gallery_act.triggered.connect(self.gallery_requested)
+        self.addAction(gallery_act)
 
         self.addSeparator()
 
@@ -58,9 +65,10 @@ class ToolbarWidget(QToolBar):
     def _on_mode_selected(self, mode_id: str):
         self._current_mode = mode_id
         labels = {
-            "bg_remove": "▶ 背景除去を実行",
-            "select_remove": "▶ 選択範囲で除去（矩形を描いてから実行）",
-            "inpaint": "▶ 生成塗りつぶしを実行",
-            "upscale": "▶ 高解像度化を実行",
+            "bg_remove":    "▶ 背景除去を実行",
+            "select_remove":"▶ 選択範囲で除去（矩形を描いてから実行）",
+            "inpaint":      "▶ 生成塗りつぶしを実行",
+            "upscale":      "▶ 高解像度化を実行",
         }
         self._run_act.setText(labels.get(mode_id, "▶ 実行"))
+        self.mode_changed.emit(mode_id)
