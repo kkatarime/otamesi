@@ -1,4 +1,5 @@
 import os
+import numpy as np
 from PyQt5.QtWidgets import QMainWindow, QFileDialog, QLabel, QMessageBox
 from PyQt5.QtCore import QThread, pyqtSignal
 from PIL import Image
@@ -6,6 +7,8 @@ from PIL import Image
 from ui.canvas_widget import CanvasWidget
 from ui.toolbar_widget import ToolbarWidget
 from ui.progress_dialog import ProgressDialog
+from ui.inpaint_dialog import InpaintDialog
+from ui.first_run_wizard import FirstRunWizard, should_show_wizard
 
 
 class _BgRemoveThread(QThread):
@@ -57,6 +60,49 @@ class _SelectRemoveThread(QThread):
             self.error.emit(f"{type(exc).__name__}: {exc}")
 
 
+class _InpaintThread(QThread):
+    finished = pyqtSignal(object, float)
+    progress = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, image: Image.Image, mask: Image.Image, prompt: str, neg: str):
+        super().__init__()
+        self._image  = image
+        self._mask   = mask
+        self._prompt = prompt
+        self._neg    = neg
+
+    def run(self):
+        try:
+            from ai.inpainter import inpaint
+            result, elapsed = inpaint(
+                self._image, self._mask, self._prompt, self._neg,
+                progress_cb=self.progress.emit,
+            )
+            self.finished.emit(result, elapsed)
+        except BaseException as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+
+
+class _UpscaleThread(QThread):
+    finished = pyqtSignal(object, float)
+    progress = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, image: Image.Image, scale: int = 4):
+        super().__init__()
+        self._image = image
+        self._scale = scale
+
+    def run(self):
+        try:
+            from ai.upscaler import upscale
+            result, elapsed = upscale(self._image, self._scale, progress_cb=self.progress.emit)
+            self.finished.emit(result, elapsed)
+        except BaseException as exc:
+            self.error.emit(f"{type(exc).__name__}: {exc}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -65,7 +111,11 @@ class MainWindow(QMainWindow):
         self._current_mode   = "bg_remove"
         self._pending_rect: tuple | None = None
         self._worker: QThread | None = None
+        self._inpaint_prompt = ""
+        self._inpaint_neg    = ""
         self._build()
+        if should_show_wizard():
+            FirstRunWizard(self).exec_()
 
     def _build(self):
         self._toolbar = ToolbarWidget(self)
@@ -113,11 +163,13 @@ class MainWindow(QMainWindow):
     def _on_run(self, mode: str):
         self._current_mode = mode
         self._canvas.set_select_mode(mode == "select_remove")
+        if mode != "inpaint":
+            self._canvas.set_brush_mode(False)
         {
             "bg_remove":     self._run_bg_remove,
             "select_remove": self._run_select_remove,
-            "inpaint":  lambda: QMessageBox.information(self, "生成塗りつぶし", "Sprint 3で実装予定です。"),
-            "upscale":  lambda: QMessageBox.information(self, "高解像度化", "Sprint 3で実装予定です。"),
+            "inpaint":       self._run_inpaint,
+            "upscale":       self._run_upscale,
         }.get(mode, lambda: None)()
 
     # ── 自動背景除去 ──────────────────────────────────────
@@ -182,6 +234,69 @@ class MainWindow(QMainWindow):
         worker.error.connect(lambda e: self._on_error(e, dlg))
         worker.start()
         dlg.exec_()
+
+    # ── 生成塗りつぶし ────────────────────────────────────
+
+    def _run_inpaint(self):
+        image = self._canvas.current_image
+        if image is None:
+            QMessageBox.information(self, "生成塗りつぶし", "先に画像を開いてください。")
+            return
+
+        dlg = InpaintDialog(self)
+        dlg.set_defaults(self._inpaint_prompt, self._inpaint_neg)
+
+        if dlg.exec_() != InpaintDialog.Accepted:
+            return
+
+        self._inpaint_prompt = dlg.prompt
+        self._inpaint_neg    = dlg.negative_prompt
+        self._canvas.set_brush_mode(True)
+        self._canvas.set_brush_radius(dlg.brush_size)
+        self._status.setText(
+            "ブラシで塗りつぶしたい領域を塗ってから「▶ 生成塗りつぶしを実行」を再度押してください"
+        )
+
+        mask = self._canvas.get_mask()
+        if mask is None or not np.any(np.array(mask) > 0):
+            return  # まだマスクが空 → ユーザーがブラシ後に再押し
+
+        self._canvas.set_brush_mode(False)
+        prog = ProgressDialog("生成塗りつぶし処理中…", self)
+        worker = _InpaintThread(image, mask, self._inpaint_prompt, self._inpaint_neg)
+        self._worker = worker
+        worker.progress.connect(prog.set_message)
+        worker.finished.connect(lambda img, t: self._on_done(img, t, prog, "生成塗りつぶし"))
+        worker.error.connect(lambda e: self._on_error(e, prog))
+        worker.start()
+        prog.exec_()
+
+    # ── 高解像度化 ────────────────────────────────────────
+
+    def _run_upscale(self):
+        image = self._canvas.current_image
+        if image is None:
+            QMessageBox.information(self, "高解像度化", "先に画像を開いてください。")
+            return
+
+        confirm = QMessageBox.question(
+            self, "高解像度化（×4）",
+            f"現在のサイズ: {image.width}×{image.height}px\n"
+            f"→ 拡大後: {image.width*4}×{image.height*4}px\n\n"
+            "実行しますか？（大きな画像は時間がかかります）",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        prog = ProgressDialog("高解像度化処理中…", self)
+        worker = _UpscaleThread(image)
+        self._worker = worker
+        worker.progress.connect(prog.set_message)
+        worker.finished.connect(lambda img, t: self._on_done(img, t, prog, "高解像度化"))
+        worker.error.connect(lambda e: self._on_error(e, prog))
+        worker.start()
+        prog.exec_()
 
     # ── 共通完了・エラー ──────────────────────────────────
 
