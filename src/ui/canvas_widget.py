@@ -31,7 +31,7 @@ class CanvasWidget(QGraphicsView):
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setStyleSheet("background: #2b2b2b; border: none;")
+        self.setStyleSheet("background: #071018; border: none;")
 
         self._image: Image.Image | None = None
         self._select_mode = False

@@ -56,17 +56,17 @@ class _ThumbCard(QWidget):
         img_label.setPixmap(pix)
         img_label.setAlignment(Qt.AlignCenter)
         img_label.setFixedSize(164, 164)
-        img_label.setStyleSheet("border: 1px solid #555; background: #1e1e1e;")
+        img_label.setStyleSheet("border: 1px solid #1e3a5a; background: #071018;")
         layout.addWidget(img_label)
 
         name_label = QLabel(path.stem[:20])
         name_label.setAlignment(Qt.AlignCenter)
-        name_label.setStyleSheet("color: #ccc; font-size: 10px;")
+        name_label.setStyleSheet("color: #7aa0c0; font-size: 10px;")
         layout.addWidget(name_label)
 
         self.setFixedWidth(172)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("QWidget:hover { background: #3a3a3a; border-radius: 4px; }")
+        self.setStyleSheet("QWidget:hover { background: #0f2030; border-radius: 4px; }")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -78,7 +78,6 @@ class GalleryDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("ギャラリー")
         self.setMinimumSize(700, 500)
-        self.setStyleSheet("background: #2b2b2b; color: white;")
         self._build()
 
     def _build(self):
@@ -86,12 +85,11 @@ class GalleryDialog(QDialog):
 
         header = QHBoxLayout()
         title = QLabel(f"📁 {GALLERY_DIR}")
-        title.setStyleSheet("color: #aaa; font-size: 11px;")
+        title.setStyleSheet("color: #7aa0c0; font-size: 11px;")
         header.addWidget(title)
         header.addStretch()
         open_btn = QPushButton("フォルダを開く")
         open_btn.clicked.connect(self._open_folder)
-        open_btn.setStyleSheet("background: #555; color: white; padding: 4px 10px; border-radius: 3px;")
         header.addWidget(open_btn)
         layout.addLayout(header)
 
@@ -108,7 +106,7 @@ class GalleryDialog(QDialog):
         self._preview_label = QLabel("サムネイルをクリックでプレビュー")
         self._preview_label.setAlignment(Qt.AlignCenter)
         self._preview_label.setFixedHeight(48)
-        self._preview_label.setStyleSheet("color: #888; font-size: 11px;")
+        self._preview_label.setStyleSheet("color: #7aa0c0; font-size: 11px;")
         layout.addWidget(self._preview_label)
 
         self._load_images()
@@ -120,7 +118,7 @@ class GalleryDialog(QDialog):
         if not files:
             empty = QLabel("まだ画像がありません")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #666; font-size: 14px;")
+            empty.setStyleSheet("color: #7aa0c0; font-size: 14px;")
             self._grid.addWidget(empty, 0, 0)
             return
 

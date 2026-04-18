@@ -46,8 +46,8 @@ class InpaintDialog(QDialog):
         status = QLabel(ai_msg)
         status.setWordWrap(True)
         status.setStyleSheet(
-            "background:#d4edda;color:#155724;padding:8px;border-radius:4px;" if ai_ok
-            else "background:#fff3cd;color:#856404;padding:8px;border-radius:4px;"
+            "background:#0a3020;color:#00c97a;padding:8px;border-radius:4px;border:1px solid #00c97a;" if ai_ok
+            else "background:#2a1e00;color:#f0a030;padding:8px;border-radius:4px;border:1px solid #f0a030;"
         )
         layout.addWidget(status)
 
