@@ -40,13 +40,13 @@ class MainWindow(QMainWindow):
         self._toolbar = ToolbarWidget(self)
         self._toolbar.open_requested.connect(self._open_image)
         self._toolbar.save_requested.connect(self._save_image)
-        self._toolbar.mode_changed.connect(self._on_mode_changed)
+        self._toolbar.run_requested.connect(self._on_run)
         self.addToolBar(self._toolbar)
 
         self._canvas = CanvasWidget()
         self.setCentralWidget(self._canvas)
 
-        self._status = QLabel("画像を開いてください")
+        self._status = QLabel("画像を開いて「▶ 実行」を押してください")
         self.statusBar().addWidget(self._status)
 
     def _open_image(self):
@@ -74,8 +74,14 @@ class MainWindow(QMainWindow):
             image.save(path)
             self._status.setText(f"保存完了: {os.path.basename(path)}")
 
-    def _on_mode_changed(self, mode: str):
+    def _on_run(self, mode: str):
         self._current_mode = mode
+        dispatch = {
+            "bg_remove": self._run_bg_remove,
+            "inpaint": lambda: QMessageBox.information(self, "生成塗りつぶし", "Sprint 3で実装予定です。"),
+            "upscale": lambda: QMessageBox.information(self, "高解像度化", "Sprint 3で実装予定です。"),
+        }
+        dispatch.get(mode, lambda: None)()
 
     def _run_bg_remove(self):
         image = self._canvas.current_image
@@ -98,10 +104,3 @@ class MainWindow(QMainWindow):
     def _on_error(self, message: str, dlg: ProgressDialog):
         dlg.reject()
         QMessageBox.critical(self, "エラー", f"処理に失敗しました:\n{message}")
-
-    def keyPressEvent(self, event):
-        from PyQt5.QtCore import Qt
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Space:
-            if self._current_mode == "bg_remove":
-                self._run_bg_remove()
-        super().keyPressEvent(event)

@@ -1,16 +1,16 @@
 from PyQt5.QtWidgets import QToolBar, QAction, QActionGroup
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtGui import QIcon
 
 
 class ToolbarWidget(QToolBar):
     open_requested = pyqtSignal()
     save_requested = pyqtSignal()
-    mode_changed = pyqtSignal(str)  # "bg_remove" | "inpaint" | "upscale"
+    run_requested = pyqtSignal(str)  # 実行ボタン → 現在のモードIDを送る
 
     def __init__(self, parent=None):
         super().__init__("メインツールバー", parent)
         self.setMovable(False)
+        self._current_mode = "bg_remove"
         self._build()
 
     def _build(self):
@@ -30,8 +30,8 @@ class ToolbarWidget(QToolBar):
         group.setExclusive(True)
 
         modes = [
-            ("🔲 背景除去", "bg_remove", "背景をワンクリックで透過PNGに変換"),
-            ("✏️ 生成塗りつぶし", "inpaint", "マスクした領域をAIで埋める（要GPU推奨）"),
+            ("🔲 背景除去", "bg_remove", "背景を透過PNGに変換"),
+            ("✏️ 生成塗りつぶし", "inpaint", "マスク領域をAIで埋める（要GPU推奨）"),
             ("🔍 高解像度化", "upscale", "画像を4倍拡大（Real-ESRGAN）"),
         ]
         for label, mode_id, tip in modes:
@@ -39,8 +39,26 @@ class ToolbarWidget(QToolBar):
             act.setStatusTip(tip)
             act.setCheckable(True)
             act.setData(mode_id)
-            act.triggered.connect(lambda checked, m=mode_id: self.mode_changed.emit(m))
+            act.triggered.connect(lambda checked, m=mode_id: self._on_mode_selected(m))
             group.addAction(act)
             self.addAction(act)
 
         group.actions()[0].setChecked(True)
+
+        self.addSeparator()
+
+        self._run_act = QAction("▶ 実行", self)
+        self._run_act.setStatusTip("選択中の機能を実行")
+        self._run_act.triggered.connect(
+            lambda: self.run_requested.emit(self._current_mode)
+        )
+        self.addAction(self._run_act)
+
+    def _on_mode_selected(self, mode_id: str):
+        self._current_mode = mode_id
+        labels = {
+            "bg_remove": "▶ 背景除去を実行",
+            "inpaint": "▶ 生成塗りつぶしを実行",
+            "upscale": "▶ 高解像度化を実行",
+        }
+        self._run_act.setText(labels.get(mode_id, "▶ 実行"))
