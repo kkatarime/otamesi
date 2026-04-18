@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git worktree*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git checkout*)",
+      "Bash(git push*)",
+      "Bash(git branch*)",
+      "Bash(npm*)",
+      "Bash(node*)",
+      "Write(memory/*)",
+      "Write(src/*)",
+      "Read(*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'echo \"[$(date +%Y-%m-%dT%H:%M:%S)] Write: ${CLAUDE_TOOL_INPUT_PATH:-unknown}\" >> /c/Users/kiyom/kk/otamesi/memory/audit-log.txt 2>/dev/null || true'"
+          }
+        ]
+      }
+    ]
+  }
+}
