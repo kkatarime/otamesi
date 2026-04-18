@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsRectItem
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush
 from PIL import Image
 import numpy as np
 
@@ -18,8 +18,7 @@ def pil_to_qpixmap(image: Image.Image) -> QPixmap:
 
 class CanvasWidget(QGraphicsView):
     image_loaded = pyqtSignal(str)
-    # 選択矩形が確定したとき (x, y, w, h) を画像ピクセル座標で通知
-    rect_selected = pyqtSignal(int, int, int, int)
+    rect_selected = pyqtSignal(int, int, int, int)  # x, y, w, h（画像ピクセル座標）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,8 +35,15 @@ class CanvasWidget(QGraphicsView):
 
         self._image: Image.Image | None = None
         self._select_mode = False
+        self._brush_mode = False
+        self._brush_erase = False
+        self._brush_radius = 20
         self._drag_start: QPointF | None = None
         self._sel_rect_item: QGraphicsRectItem | None = None
+
+        # マスクオーバーレイ用（ブラシモード）
+        self._mask_arr: np.ndarray | None = None       # H×W uint8 (0/255)
+        self._mask_pixmap_item: QGraphicsPixmapItem | None = None
 
     # ── 公開API ──────────────────────────────────────────
 
@@ -48,15 +54,18 @@ class CanvasWidget(QGraphicsView):
         self._scene.setSceneRect(QRectF(pixmap.rect()))
         self.fitInView(self._pixmap_item, Qt.KeepAspectRatio)
         self._clear_selection()
+        self._reset_mask()
 
     def update_image(self, image: Image.Image):
         self._image = image
         pixmap = pil_to_qpixmap(image)
         self._pixmap_item.setPixmap(pixmap)
         self._clear_selection()
+        self._reset_mask()
 
     def set_select_mode(self, enabled: bool):
         self._select_mode = enabled
+        self._brush_mode = False
         if enabled:
             self.setCursor(Qt.CrossCursor)
             self.setDragMode(QGraphicsView.NoDrag)
@@ -65,9 +74,77 @@ class CanvasWidget(QGraphicsView):
             self.setDragMode(QGraphicsView.ScrollHandDrag)
             self._clear_selection()
 
+    def set_brush_mode(self, enabled: bool, erase: bool = False):
+        self._brush_mode = enabled
+        self._brush_erase = erase
+        self._select_mode = False
+        if enabled:
+            self.setCursor(Qt.CrossCursor)
+            self.setDragMode(QGraphicsView.NoDrag)
+            if self._image and self._mask_arr is None:
+                self._reset_mask()
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
+
+    def set_brush_radius(self, radius: int):
+        self._brush_radius = max(1, radius)
+
+    def clear_mask(self):
+        self._reset_mask()
+
+    def get_mask(self) -> "Image.Image | None":
+        """ブラシで描いたマスクを PIL Image(L mode) で返す。白=塗りつぶし対象"""
+        if self._mask_arr is None:
+            return None
+        return Image.fromarray(self._mask_arr, "L")
+
     @property
-    def current_image(self) -> Image.Image | None:
+    def current_image(self) -> "Image.Image | None":
         return self._image
+
+    # ── マスク管理 ────────────────────────────────────────
+
+    def _reset_mask(self):
+        if self._mask_pixmap_item:
+            self._scene.removeItem(self._mask_pixmap_item)
+            self._mask_pixmap_item = None
+        if self._image:
+            self._mask_arr = np.zeros(
+                (self._image.height, self._image.width), dtype=np.uint8
+            )
+        else:
+            self._mask_arr = None
+
+    def _update_mask_overlay(self):
+        if self._mask_arr is None or self._image is None:
+            return
+        h, w = self._mask_arr.shape
+        # RGBA: 赤半透明でマスク領域を表示
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        overlay[self._mask_arr > 0] = [255, 0, 0, 120]
+        overlay_img = Image.fromarray(overlay, "RGBA")
+        data = overlay_img.tobytes("raw", "RGBA")
+        qimg = QImage(data, w, h, QImage.Format_RGBA8888)
+        pix = QPixmap.fromImage(qimg)
+        if self._mask_pixmap_item is None:
+            self._mask_pixmap_item = self._scene.addPixmap(pix)
+            self._mask_pixmap_item.setZValue(1)
+        else:
+            self._mask_pixmap_item.setPixmap(pix)
+
+    def _draw_brush(self, scene_pt: QPointF, erase: bool):
+        if self._mask_arr is None or self._image is None:
+            return
+        cx, cy = int(scene_pt.x()), int(scene_pt.y())
+        r = self._brush_radius
+        h, w = self._mask_arr.shape
+        y0, y1 = max(0, cy - r), min(h, cy + r + 1)
+        x0, x1 = max(0, cx - r), min(w, cx + r + 1)
+        ys, xs = np.ogrid[y0:y1, x0:x1]
+        circle = (xs - cx) ** 2 + (ys - cy) ** 2 <= r * r
+        self._mask_arr[y0:y1, x0:x1][circle] = 0 if erase else 255
+        self._update_mask_overlay()
 
     # ── 選択矩形 ─────────────────────────────────────────
 
@@ -86,10 +163,19 @@ class CanvasWidget(QGraphicsView):
         w, h = self._image.width, self._image.height
         return QPointF(max(0, min(pt.x(), w)), max(0, min(pt.y(), h)))
 
+    # ── マウスイベント ────────────────────────────────────
+
     def mousePressEvent(self, event):
+        pt = self._scene_point(event)
+        if self._brush_mode and event.button() == Qt.LeftButton and self._image:
+            self._draw_brush(pt, erase=self._brush_erase)
+            return
+        if self._brush_mode and event.button() == Qt.RightButton and self._image:
+            self._draw_brush(pt, erase=True)
+            return
         if self._select_mode and event.button() == Qt.LeftButton and self._image:
             self._clear_selection()
-            self._drag_start = self._clamp_to_image(self._scene_point(event))
+            self._drag_start = self._clamp_to_image(pt)
             pen = QPen(QColor(0, 200, 255), 1.5, Qt.DashLine)
             self._sel_rect_item = self._scene.addRect(
                 QRectF(self._drag_start, self._drag_start), pen
@@ -98,13 +184,20 @@ class CanvasWidget(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        pt = self._scene_point(event)
+        if self._brush_mode and event.buttons() & (Qt.LeftButton | Qt.RightButton) and self._image:
+            erase = bool(event.buttons() & Qt.RightButton) or self._brush_erase
+            self._draw_brush(pt, erase=erase)
+            return
         if self._select_mode and self._drag_start and self._sel_rect_item:
-            cur = self._clamp_to_image(self._scene_point(event))
+            cur = self._clamp_to_image(pt)
             self._sel_rect_item.setRect(QRectF(self._drag_start, cur).normalized())
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._brush_mode:
+            return
         if self._select_mode and self._drag_start and event.button() == Qt.LeftButton:
             cur = self._clamp_to_image(self._scene_point(event))
             rect = QRectF(self._drag_start, cur).normalized()
