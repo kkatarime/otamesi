@@ -17,14 +17,20 @@ class _BgRemoveThread(QThread):
     def __init__(self, image: Image.Image):
         super().__init__()
         self._image = image
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         try:
             from ai.background_remover import remove_background
             result, elapsed = remove_background(self._image)
-            self.finished.emit(result, elapsed)
-        except Exception as e:
-            self.error.emit(str(e))
+            if not self._cancelled:
+                self.finished.emit(result, elapsed)
+        except BaseException as e:
+            if not self._cancelled:
+                self.error.emit(str(e))
 
 
 class _SelectRemoveThread(QThread):
@@ -41,7 +47,7 @@ class _SelectRemoveThread(QThread):
             from ai.grabcut_remover import remove_background_by_rect
             result, elapsed = remove_background_by_rect(self._image, self._rect)
             self.finished.emit(result, elapsed)
-        except Exception as e:
+        except BaseException as e:
             self.error.emit(str(e))
 
 
@@ -112,6 +118,7 @@ class MainWindow(QMainWindow):
         if image is None:
             QMessageBox.information(self, "背景除去", "先に画像を開いてください。")
             return
+
         from ai.background_remover import is_model_cached
         if not is_model_cached():
             ret = QMessageBox.question(
@@ -120,18 +127,31 @@ class MainWindow(QMainWindow):
             )
             if ret != QMessageBox.Yes:
                 return
-        dlg = ProgressDialog("背景を除去しています…", self)
-        self._worker = _BgRemoveThread(image)
-        self._worker.finished.connect(lambda img, t: self._on_done(img, t, dlg, "背景除去"))
-        self._worker.error.connect(lambda e: self._on_error(e, dlg))
-        self._worker.start()
+
+        px = image.width * image.height
+        est = "数秒" if px < 1_000_000 else "1〜3分（CPU処理）"
+        dlg = ProgressDialog(
+            f"背景を除去しています…\n画像サイズ: {image.width}×{image.height}px\n目安: {est}",
+            self,
+            cancelable=True,
+        )
+        worker = _BgRemoveThread(image)
+        self._worker = worker
+
+        worker.finished.connect(lambda img, t: self._on_done(img, t, dlg, "背景除去"))
+        worker.error.connect(lambda e: self._on_error(e, dlg))
+        dlg.cancel_requested.connect(worker.cancel)
+
+        worker.start()
         dlg.exec_()
 
     # ── 選択範囲除去 ──────────────────────────────────────
 
     def _on_rect_selected(self, x: int, y: int, w: int, h: int):
         self._pending_rect = (x, y, w, h)
-        self._status.setText(f"選択範囲: ({x}, {y}) {w}×{h}px — 「▶ 実行」で除去")
+        self._status.setText(
+            f"選択範囲: ({x}, {y})  {w}×{h}px — 「▶ 実行」で矩形外を透明化"
+        )
 
     def _run_select_remove(self):
         image = self._canvas.current_image
@@ -141,16 +161,20 @@ class MainWindow(QMainWindow):
         if not self._pending_rect:
             self._status.setText("✂️ 選択除去: 画像上でドラッグして範囲を選んでから「▶ 実行」")
             return
-        dlg = ProgressDialog("選択範囲で背景を除去しています…", self)
-        self._worker = _SelectRemoveThread(image, self._pending_rect)
-        self._worker.finished.connect(lambda img, t: self._on_done(img, t, dlg, "選択除去"))
-        self._worker.error.connect(lambda e: self._on_error(e, dlg))
-        self._worker.start()
+
+        dlg = ProgressDialog("矩形外を透明化しています…", self)
+        worker = _SelectRemoveThread(image, self._pending_rect)
+        self._worker = worker
+        worker.finished.connect(lambda img, t: self._on_done(img, t, dlg, "選択除去"))
+        worker.error.connect(lambda e: self._on_error(e, dlg))
+        worker.start()
         dlg.exec_()
 
     # ── 共通完了・エラー ──────────────────────────────────
 
     def _on_done(self, image: Image.Image, elapsed: float, dlg: ProgressDialog, label: str):
+        if dlg.cancelled:
+            return
         dlg.accept()
         self._canvas.update_image(image)
         self._canvas.set_select_mode(False)
@@ -158,5 +182,7 @@ class MainWindow(QMainWindow):
         self._status.setText(f"{label}完了 ({elapsed:.1f}秒) — 💾 保存で書き出せます")
 
     def _on_error(self, message: str, dlg: ProgressDialog):
+        if dlg.cancelled:
+            return
         dlg.reject()
         QMessageBox.critical(self, "エラー", f"処理に失敗しました:\n{message}")
